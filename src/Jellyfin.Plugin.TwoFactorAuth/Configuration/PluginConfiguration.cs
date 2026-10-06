@@ -342,6 +342,16 @@ public class PluginConfiguration : BasePluginConfiguration
 
     public string GotifyAppToken { get; set; } = string.Empty;
 
+    /// <summary>Pushover user (or group) key, shown on the Pushover dashboard
+    /// after signing in. Paired with <see cref="PushoverAppToken"/>; the channel
+    /// is only used when both are set.</summary>
+    public string PushoverUserKey { get; set; } = string.Empty;
+
+    /// <summary>Pushover application API token, created at
+    /// pushover.net/apps/build. Treated as a secret (redacted from config
+    /// exports).</summary>
+    public string PushoverAppToken { get; set; } = string.Empty;
+
     /// <summary>[v2.5.17] (#116): allow notification targets (ntfy / Gotify /
     /// webhook) that resolve to private/LAN/loopback addresses. Default false
     /// keeps the v2.5.6 SSRF guard, which refuses RFC1918 / loopback / ULA so a

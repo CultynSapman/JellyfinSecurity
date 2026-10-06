@@ -292,7 +292,8 @@ public class SecurityScoreService : IDisposable
         bool notificationsConfigured =
             !string.IsNullOrWhiteSpace(cfg.WebhookUrl)
             || (!string.IsNullOrWhiteSpace(cfg.NtfyUrl) && !string.IsNullOrWhiteSpace(cfg.NtfyTopic))
-            || (!string.IsNullOrWhiteSpace(cfg.GotifyUrl) && !string.IsNullOrWhiteSpace(cfg.GotifyAppToken));
+            || (!string.IsNullOrWhiteSpace(cfg.GotifyUrl) && !string.IsNullOrWhiteSpace(cfg.GotifyAppToken))
+            || (!string.IsNullOrWhiteSpace(cfg.PushoverUserKey) && !string.IsNullOrWhiteSpace(cfg.PushoverAppToken));
         factors.Add(new ScoreFactor
         {
             Id = "webhook",
@@ -301,7 +302,7 @@ public class SecurityScoreService : IDisposable
             Earned = notificationsConfigured ? 5 : 0,
             Possible = 5,
             Status = notificationsConfigured ? "ok" : "partial",
-            NextAction = notificationsConfigured ? null : "Configure a notification channel (ntfy, Gotify or a webhook) so security events (bans, lockouts, 2FA changes) reach you.",
+            NextAction = notificationsConfigured ? null : "Configure a notification channel (ntfy, Gotify, Pushover or a webhook) so security events (bans, lockouts, 2FA changes) reach you.",
             NextActionKey = notificationsConfigured ? null : "tfa.factor.webhook.action"
         });
 

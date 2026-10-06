@@ -68,6 +68,28 @@ public class ConfigExportService
             redactedCfg.GotifyAppToken = string.Empty;
             redacted.Add("GotifyAppToken");
         }
+        // ntfy credentials (added v2.5.21) were never added to this list, so a
+        // config-only export — which is not encrypted — carried them in clear.
+        if (!string.IsNullOrEmpty(redactedCfg.NtfyToken))
+        {
+            redactedCfg.NtfyToken = string.Empty;
+            redacted.Add("NtfyToken");
+        }
+        if (!string.IsNullOrEmpty(redactedCfg.NtfyPassword))
+        {
+            redactedCfg.NtfyPassword = string.Empty;
+            redacted.Add("NtfyPassword");
+        }
+        if (!string.IsNullOrEmpty(redactedCfg.PushoverAppToken))
+        {
+            redactedCfg.PushoverAppToken = string.Empty;
+            redacted.Add("PushoverAppToken");
+        }
+        if (!string.IsNullOrEmpty(redactedCfg.PushoverUserKey))
+        {
+            redactedCfg.PushoverUserKey = string.Empty;
+            redacted.Add("PushoverUserKey");
+        }
         if (!string.IsNullOrEmpty(redactedCfg.NtfyTopic))
         {
             redactedCfg.NtfyTopic = string.Empty;

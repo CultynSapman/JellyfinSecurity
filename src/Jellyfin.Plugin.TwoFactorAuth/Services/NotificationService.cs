@@ -238,7 +238,7 @@ public class NotificationService
             "test",
             new { test = true });
 
-    /// <summary>Centralised dispatch — sends to ntfy, Gotify, the configured
+    /// <summary>Centralised dispatch — sends to ntfy, Gotify, Pushover, the configured
     /// webhook (with optional HMAC signature), and logs a stub for email.
     /// `event` is the machine-readable type for webhook consumers; `payload`
     /// is an event-specific bag serialised into the webhook body.</summary>
@@ -393,6 +393,61 @@ public class NotificationService
             }
         }
 
+        var pushoverResult = new ChannelResult { Channel = "pushover" };
+        results.Add(pushoverResult);
+        if (!string.IsNullOrWhiteSpace(config.PushoverUserKey) && !string.IsNullOrWhiteSpace(config.PushoverAppToken))
+        {
+            pushoverResult.Configured = true;
+            // Fixed public endpoint, but it still goes through the same pinned,
+            // SSRF-guarded client as every other channel so DNS can't redirect
+            // the token mid-flight. Credentials travel in the form body, never
+            // the URL, so they can't leak into exception text or proxy logs.
+            var pushoverAddrs = GetSafeWebhookAddresses(PushoverApiUrl);
+            if (pushoverAddrs is null || pushoverAddrs.Length == 0)
+            {
+                pushoverResult.Error = "Could not resolve the Pushover API address (see server log).";
+            }
+            else
+            {
+                try
+                {
+                    using var req = new HttpRequestMessage(HttpMethod.Post, PushoverApiUrl)
+                    {
+                        Content = new FormUrlEncodedContent(
+                            BuildPushoverForm(config.PushoverAppToken, config.PushoverUserKey, title, message)),
+                    };
+                    _pinnedAllowedAddresses.Value = pushoverAddrs;
+                    try
+                    {
+                        using var response = await _webhookHttpClient.SendAsync(req).ConfigureAwait(false);
+                        pushoverResult.Success = response.IsSuccessStatusCode;
+                        if (!response.IsSuccessStatusCode)
+                        {
+                            var status = (int)response.StatusCode;
+                            // Pushover answers a bad token or user key with 400,
+                            // which the generic describer can't explain.
+                            pushoverResult.Error = status == 400
+                                ? "HTTP 400 — Pushover rejected the request. Check the application token and user key."
+                                : DescribeHttpFailure(status, "Pushover");
+                            _logger.LogError("Failed to send Pushover notification: HTTP {Status}", status);
+                        }
+                    }
+                    finally
+                    {
+                        _pinnedAllowedAddresses.Value = null;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Type + message only; the exception's Request would carry
+                    // the form body with the token.
+                    pushoverResult.Error = ex.GetType().Name;
+                    _logger.LogError("Failed to send Pushover notification: {Type}: {Msg}",
+                        ex.GetType().Name, ex.Message);
+                }
+            }
+        }
+
         if (config.NotifyEmailAddresses.Length > 0)
         {
             _logger.LogInformation("Email notification for '{Title}': {Message}", title, message);
@@ -542,6 +597,35 @@ public class NotificationService
         }
 
         return results;
+    }
+
+    /// <summary>Pushover's message API endpoint.</summary>
+    internal const string PushoverApiUrl = "https://api.pushover.net/1/messages.json";
+
+    /// <summary>Pushover's documented limits: title 250 characters, message
+    /// 1024. Longer values are rejected outright, so trim instead.</summary>
+    internal const int PushoverMaxTitle = 250;
+
+    internal const int PushoverMaxMessage = 1024;
+
+    /// <summary>Form fields for a Pushover message. Split out so the payload
+    /// contract (field names, trimming, length limits) is unit-testable without
+    /// sending anything.</summary>
+    internal static Dictionary<string, string> BuildPushoverForm(string appToken, string userKey, string title, string message)
+    {
+        static string Clip(string? s, int max)
+        {
+            s ??= string.Empty;
+            return s.Length <= max ? s : s[..(max - 1)] + "…";
+        }
+
+        return new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["token"] = appToken.Trim(),
+            ["user"] = userKey.Trim(),
+            ["title"] = Clip(title, PushoverMaxTitle),
+            ["message"] = Clip(string.IsNullOrWhiteSpace(message) ? title : message, PushoverMaxMessage),
+        };
     }
 
     /// <summary>[v2.5.21] (#143): describe an HTTP failure to the admin without

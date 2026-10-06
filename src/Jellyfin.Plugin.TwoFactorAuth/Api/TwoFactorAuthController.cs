@@ -5466,7 +5466,7 @@ public class TwoFactorAuthController : ControllerBase
         {
             return BadRequest(new
             {
-                message = "No notification channel is configured. Set an ntfy server + topic, a Gotify server + token, or a webhook URL first.",
+                message = "No notification channel is configured. Set an ntfy server + topic, a Gotify server + token, a Pushover user key + app token, or a webhook URL first.",
                 channels = Array.Empty<object>(),
             });
         }

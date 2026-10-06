@@ -1165,10 +1165,12 @@
                     var ntfyTopic = page.querySelector('#cfgNtfyTopic').value.trim();
                     var gotifyUrl = page.querySelector('#cfgGotifyUrl').value.trim();
                     var gotifyToken = page.querySelector('#cfgGotifyToken').value.trim();
+                    var pushoverUser = page.querySelector('#cfgPushoverUser').value.trim();
+                    var pushoverToken = page.querySelector('#cfgPushoverToken').value.trim();
                     var webhookUrl = page.querySelector('#cfgWebhookUrl').value.trim();
-                    if (!(ntfyUrl && ntfyTopic) && !(gotifyUrl && gotifyToken) && !webhookUrl) {
+                    if (!(ntfyUrl && ntfyTopic) && !(gotifyUrl && gotifyToken) && !(pushoverUser && pushoverToken) && !webhookUrl) {
                         out.style.color = '#f44336';
-                        out.textContent = '✗ ' + _tr('tfa.admin.settings.notify_need_channel', 'Configure ntfy, Gotify or a webhook first.');
+                        out.textContent = '✗ ' + _tr('tfa.admin.settings.notify_need_channel', 'Configure ntfy, Gotify, Pushover or a webhook first.');
                         return;
                     }
                     out.style.color = '#888'; out.textContent = _tr('tfa.admin.settings.saving_sending', 'Saving + sending…');
@@ -1182,6 +1184,8 @@
                         c.NtfyPassword = page.querySelector('#cfgNtfyPassword').value;
                         c.GotifyUrl = gotifyUrl;
                         c.GotifyAppToken = gotifyToken;
+                        c.PushoverUserKey = pushoverUser;
+                        c.PushoverAppToken = pushoverToken;
                         c.WebhookUrl = webhookUrl;
                         c.WebhookSecret = page.querySelector('#cfgWebhookSecret').value.trim();
                         c.WebhookHeaders = page.querySelector('#cfgWebhookHeaders').value
@@ -1280,6 +1284,8 @@
                         page.querySelector('#cfgNtfyPassword').value = c.NtfyPassword || '';
                         page.querySelector('#cfgGotifyUrl').value = c.GotifyUrl || '';
                         page.querySelector('#cfgGotifyToken').value = c.GotifyAppToken || '';
+                        page.querySelector('#cfgPushoverUser').value = c.PushoverUserKey || '';
+                        page.querySelector('#cfgPushoverToken').value = c.PushoverAppToken || '';
                         page.querySelector('#cfgEmails').value = (c.NotifyEmailAddresses || []).join('\n');
                         page.querySelector('#cfgIssuer').value = c.TotpIssuerName || 'Jellyfin';
                         // v1.4 fields
@@ -1462,6 +1468,8 @@
                         c.NtfyPassword = page.querySelector('#cfgNtfyPassword').value;
                         c.GotifyUrl = page.querySelector('#cfgGotifyUrl').value.trim();
                         c.GotifyAppToken = page.querySelector('#cfgGotifyToken').value.trim();
+                        c.PushoverUserKey = page.querySelector('#cfgPushoverUser').value.trim();
+                        c.PushoverAppToken = page.querySelector('#cfgPushoverToken').value.trim();
                         c.NotifyEmailAddresses = page.querySelector('#cfgEmails').value.split('\n').map(function(s){return s.trim();}).filter(Boolean);
                         c.TotpIssuerName = page.querySelector('#cfgIssuer').value.trim() || 'Jellyfin';
                         // v1.4 fields

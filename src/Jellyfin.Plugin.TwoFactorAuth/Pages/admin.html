@@ -829,6 +829,15 @@
                                 <label data-i18n-key="tfa.admin.settings.lbl_gotify_token">Gotify App Token</label>
                                 <input type="text" id="cfgGotifyToken" class="tfa-input" style="width:200px;" />
                             </div>
+                            <div class="tfa-row">
+                                <label data-i18n-key="tfa.admin.settings.lbl_pushover_user">Pushover user key</label>
+                                <input type="text" id="cfgPushoverUser" class="tfa-input" style="width:300px;" autocomplete="off" spellcheck="false" />
+                            </div>
+                            <div class="tfa-row">
+                                <label data-i18n-key="tfa.admin.settings.lbl_pushover_token">Pushover API token</label>
+                                <input type="password" id="cfgPushoverToken" class="tfa-input" style="width:300px;" autocomplete="new-password" spellcheck="false" />
+                            </div>
+                            <div class="tfa-note" data-i18n-key="tfa.admin.settings.pushover_note">Your user key is on the Pushover dashboard after you sign in. Create an application at pushover.net/apps/build to get an API token.</div>
                             <div style="margin-top:12px;">
                                 <label style="font-size:13px;color:#888;" data-i18n-key="tfa.admin.settings.lbl_alert_emails">Admin email addresses for security alerts (one per line)</label>
                                 <textarea id="cfgEmails" class="tfa-input"></textarea>
@@ -848,7 +857,7 @@
                             </div>
                             <div style="margin-top:10px;">
                                 <label><input type="checkbox" id="cfgAllowPrivateNotifTargets" is="emby-checkbox" /> <span data-i18n-key="tfa.admin.settings.opt_allow_private_notif">Allow notifications to private/LAN addresses &nbsp;<span class="tfa-badge warn" style="font-size:10px;vertical-align:middle;" data-i18n-key="tfa.admin.settings.opt_allow_private_notif_pill">Self-hosted</span></span></label>
-                                <div class="tfa-note" data-i18n-key="tfa.admin.settings.opt_allow_private_notif_note">Off by default: ntfy/Gotify/webhook targets resolving to a private LAN or loopback IP are refused (SSRF protection). Enable this for a self-hosted ntfy/Gotify behind a reverse proxy on your LAN (e.g. ntfy.mydomain.com → 192.168.x.x). Link-local / cloud-metadata addresses (169.254.x, fe80::) stay blocked either way.</div>
+                                <div class="tfa-note" data-i18n-key="tfa.admin.settings.opt_allow_private_notif_note">Off by default: ntfy/Gotify/Pushover/webhook targets resolving to a private LAN or loopback IP are refused (SSRF protection). Enable this for a self-hosted ntfy/Gotify behind a reverse proxy on your LAN (e.g. ntfy.mydomain.com → 192.168.x.x). Link-local / cloud-metadata addresses (169.254.x, fe80::) stay blocked either way.</div>
                             </div>
                             <div style="margin-top:8px;">
                                 <button type="button" class="tfa-btn" id="btnTestWebhook" data-i18n-key="tfa.admin.settings.btn_test_webhook">Send test notification</button>

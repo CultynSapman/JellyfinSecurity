@@ -71,10 +71,23 @@ public class ConfigExportRedactionTests
         cfg.SmtpPassword = "smtp-secret";
         cfg.WebhookSecret = "webhook-secret";
         cfg.WebhookEd25519PrivateKey = "ed25519-secret";
+        cfg.NtfyToken = "ntfy-token";
+        cfg.NtfyPassword = "ntfy-password";
+        cfg.PushoverAppToken = "pushover-token";
+        cfg.PushoverUserKey = "pushover-user";
         cfg.OidcProviders.Add(new OidcProvider { Id = "google", ClientSecret = "client-secret" });
 
         var env = await svc.BuildConfigOnlyExportAsync();
         var payload = (ConfigExportPayload)env.Payload;
+
+        Assert.Equal(string.Empty, payload.Configuration.NtfyToken);
+        Assert.Equal(string.Empty, payload.Configuration.NtfyPassword);
+        Assert.Equal(string.Empty, payload.Configuration.PushoverAppToken);
+        Assert.Equal(string.Empty, payload.Configuration.PushoverUserKey);
+        Assert.Contains("NtfyToken", payload.RedactedFields);
+        Assert.Contains("NtfyPassword", payload.RedactedFields);
+        Assert.Contains("PushoverAppToken", payload.RedactedFields);
+        Assert.Contains("PushoverUserKey", payload.RedactedFields);
 
         Assert.Equal(string.Empty, payload.Configuration.SmtpPassword);
         Assert.Equal(string.Empty, payload.Configuration.WebhookSecret);
