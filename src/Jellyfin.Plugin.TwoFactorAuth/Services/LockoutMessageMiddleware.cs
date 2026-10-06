@@ -27,9 +27,15 @@ namespace Jellyfin.Plugin.TwoFactorAuth.Services;
 /// recognizable 401 JSON body ({"accountLocked":true,...}). inject.js detects
 /// that marker (the same way it detects twoFactorRequired) and shows a toast.
 ///
-/// Fails OPEN: any error in the pre-check lets the request flow to the normal
-/// pipeline, so a bug here can never block legitimate logins. IsLockedOutAsync
-/// honours the admin exemption, so an exempt administrator is never blocked.
+/// Fails OPEN on internal errors (a store or lookup that throws), so a bug here
+/// can never block legitimate logins. It fails CLOSED on a request body it
+/// cannot read the way Jellyfin binds it, because passing that through skipped
+/// the lockout entirely. IsLockedOutAsync honours the admin exemption, so an
+/// exempt administrator is never blocked.
+///
+/// It is also the per-IP brute-force hook for password sign-in: banned IPs are
+/// refused before the password is tested, and every wrong password feeds the
+/// IP ban counter (TwoFactorAuthProvider only sees plugin-routed users).
 /// </summary>
 public class LockoutMessageMiddleware
 {
@@ -37,6 +43,7 @@ public class LockoutMessageMiddleware
     private readonly UserTwoFactorStore _store;
     private readonly IUserManager _userManager;
     private readonly OidcLoginTokenStore _bridgeTokens;
+    private readonly IpBanService _ipBans;
     private readonly ILogger<LockoutMessageMiddleware> _logger;
 
     public LockoutMessageMiddleware(
@@ -44,12 +51,14 @@ public class LockoutMessageMiddleware
         UserTwoFactorStore store,
         IUserManager userManager,
         OidcLoginTokenStore bridgeTokens,
+        IpBanService ipBans,
         ILogger<LockoutMessageMiddleware> logger)
     {
         _next = next;
         _store = store;
         _userManager = userManager;
         _bridgeTokens = bridgeTokens;
+        _ipBans = ipBans;
         _logger = logger;
     }
 
@@ -65,11 +74,33 @@ public class LockoutMessageMiddleware
             return;
         }
 
-        // Read the submitted credentials once (best-effort; nulls = unreadable
-        // body → behave as a pass-through). The two endpoints carry them
+        // 00. IP BAN GATE. A banned source is refused BEFORE its password is
+        //     tested. Previously the ban was only checked after Jellyfin had
+        //     already accepted the password (in TwoFactorEnforcementMiddleware),
+        //     so a banned IP could keep guessing, and the distinct "IP blocked"
+        //     reply it got on a correct guess confirmed the password.
+        var clientIp = BypassEvaluator.ResolveClientIp(context);
+        if (!string.IsNullOrEmpty(clientIp) && _ipBans.CheckBanned(clientIp) is { } ban)
+        {
+            _logger.LogWarning("[2FA] Login refused: IP {Ip} is banned until {ExpiresAt}.", clientIp, ban.ExpiresAt);
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            context.Response.ContentType = "application/json";
+            await context.Response.WriteAsync(
+                JsonSerializer.Serialize(new
+                {
+                    message = "This IP address is temporarily blocked.",
+                    ipBanned = true,
+                    expiresAt = ban.ExpiresAt,
+                }))
+                .ConfigureAwait(false);
+            return;
+        }
+
+        // Read the submitted credentials once. The two endpoints carry them
         // differently: AuthenticateByName posts a JSON body, while the obsolete
         // by-id form takes ?pw= and names the account by route GUID instead of
-        // by username.
+        // by username. A body that can't be read the way Jellyfin binds it is
+        // refused (see PeekCredentialsAsync).
         string? username;
         string? password;
         Jellyfin.Database.Implementations.Entities.User? user;
@@ -86,7 +117,24 @@ public class LockoutMessageMiddleware
         }
         else
         {
-            (username, password) = await PeekCredentialsAsync(context.Request).ConfigureAwait(false);
+            CredentialReadStatus readStatus;
+            (readStatus, username, password) = await PeekCredentialsAsync(context.Request).ConfigureAwait(false);
+            if (readStatus != CredentialReadStatus.Ok)
+            {
+                // Fail CLOSED: a body we can't read the way Jellyfin binds it
+                // would otherwise reach the password check unthrottled.
+                // Genuine clients send a small UTF-8 JSON object, so nothing
+                // legitimate lands here.
+                _logger.LogWarning("[2FA] Login refused: unreadable sign-in body ({Status}) from {Ip}.", readStatus, clientIp ?? "(unknown)");
+                RecordIpFailure(clientIp, null);
+                context.Response.StatusCode = readStatus == CredentialReadStatus.TooLarge
+                    ? StatusCodes.Status413PayloadTooLarge
+                    : StatusCodes.Status400BadRequest;
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsync("{\"message\":\"Invalid sign-in request.\"}").ConfigureAwait(false);
+                return;
+            }
+
             user = ResolveUserSafe(username);
         }
 
@@ -141,6 +189,8 @@ public class LockoutMessageMiddleware
         if (user is not null && await IsLockedSafeAsync(user.Id).ConfigureAwait(false))
         {
             _logger.LogWarning("[2FA] Login refused for locked account '{User}'.", user.Username);
+            // Spraying guesses at already-locked accounts is still guessing.
+            RecordIpFailure(clientIp, user);
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             context.Response.ContentType = "application/json";
             await context.Response.WriteAsync(
@@ -161,6 +211,7 @@ public class LockoutMessageMiddleware
             // propagate so the normal 401 is produced. We do NOT also run the
             // status-based branch below in this case (we re-throw), so there's
             // no double count.
+            RecordIpFailure(clientIp, user);
             if (user is not null)
             {
                 try
@@ -185,6 +236,19 @@ public class LockoutMessageMiddleware
         //    status rather than a thrown exception. Admin accounts are exempt
         //    inside RecordFailedAttemptAsync (the counter still increments for
         //    visibility, but LockoutEnd is never set).
+        //
+        //    The IP counter is fed here too, and BEFORE the user-null return:
+        //    guessing against usernames that don't exist is still brute force.
+        //    Before this change wrong passwords for default-provider users never
+        //    reached IpBanService at all, so the "Fail2Ban-style" ban could not
+        //    trigger on ordinary password guessing. On success we deliberately do
+        //    NOT reset the IP counter: one valid account would otherwise let an
+        //    attacker wipe their failure count between guesses at other accounts.
+        if (context.Response.StatusCode == StatusCodes.Status401Unauthorized)
+        {
+            RecordIpFailure(clientIp, user);
+        }
+
         if (user is null)
         {
             return;
@@ -315,6 +379,31 @@ public class LockoutMessageMiddleware
         return match.Success && Guid.TryParse(match.Groups[1].Value, out routeUserId);
     }
 
+    /// <summary>Feed one failed password attempt into the per-IP ban counter.
+    /// Skipped for users routed to the plugin's own authentication provider,
+    /// because TwoFactorAuthProvider already records those failures itself and
+    /// counting here as well would ban twice as fast. Never throws.</summary>
+    private void RecordIpFailure(string? clientIp, Jellyfin.Database.Implementations.Entities.User? user)
+    {
+        if (string.IsNullOrEmpty(clientIp) || IsPluginRoutedUser(user))
+        {
+            return;
+        }
+
+        try
+        {
+            _ipBans.RecordFailure(clientIp);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "[2FA] IP failure record failed (non-fatal)");
+        }
+    }
+
+    internal static bool IsPluginRoutedUser(Jellyfin.Database.Implementations.Entities.User? user)
+        => user is not null
+            && string.Equals(user.AuthenticationProviderId, SignInProviderRestore.PluginProviderId, StringComparison.OrdinalIgnoreCase);
+
     private async Task<bool> IsLockedSafeAsync(Guid userId)
     {
         try
@@ -360,61 +449,191 @@ public class LockoutMessageMiddleware
         }
     }
 
+    /// <summary>Largest AuthenticateByName body we will read. A real sign-in is
+    /// well under 1 KB; anything bigger is refused rather than passed through.</summary>
+    internal const int MaxCredentialBodyBytes = 64 * 1024;
+
+    /// <summary>Outcome of reading the submitted credentials.</summary>
+    internal enum CredentialReadStatus
+    {
+        /// <summary>Body read and parsed the same way Jellyfin binds it.</summary>
+        Ok,
+
+        /// <summary>Body is larger than <see cref="MaxCredentialBodyBytes"/>.</summary>
+        TooLarge,
+
+        /// <summary>Body could not be decoded or parsed as Jellyfin would.</summary>
+        Unreadable,
+    }
+
     /// <summary>Read the JSON body's Username + Pw without consuming it for the
-    /// downstream pipeline (EnableBuffering + rewind). Returns (null, null) on
-    /// any error or an unexpectedly large body — callers treat that as a
-    /// pass-through.</summary>
-    private static async Task<(string? Username, string? Password)> PeekCredentialsAsync(HttpRequest request)
+    /// downstream pipeline (EnableBuffering + rewind).
+    ///
+    /// SECURITY: this used to return (null, null) for any body over 8 KB or any
+    /// body it could not parse, and the caller treated that as a pass-through.
+    /// Jellyfin itself happily binds a padded body, a UTF-16 body, or one whose
+    /// property names are in a different case, so each of those reached the
+    /// password check with no lockout pre-check and no failure recorded —
+    /// unlimited guessing. A body we cannot read is now reported to the caller,
+    /// which refuses the request instead of waving it through.</summary>
+    private static async Task<(CredentialReadStatus Status, string? Username, string? Password)> PeekCredentialsAsync(HttpRequest request)
     {
         try
         {
-            // The auth payload is tiny; refuse to buffer anything unexpectedly large.
-            if (request.ContentLength is > 8192)
+            if (request.ContentLength is > MaxCredentialBodyBytes)
             {
-                return (null, null);
+                return (CredentialReadStatus.TooLarge, null, null);
             }
 
             request.EnableBuffering();
-            string body;
-            using (var reader = new StreamReader(
-                request.Body, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true))
+
+            // Read at most one byte past the cap so a chunked body (no
+            // Content-Length) can't make us buffer without bound.
+            var buffer = new byte[MaxCredentialBodyBytes + 1];
+            var total = 0;
+            int read;
+            while (total < buffer.Length
+                && (read = await request.Body.ReadAsync(buffer.AsMemory(total, buffer.Length - total)).ConfigureAwait(false)) > 0)
             {
-                body = await reader.ReadToEndAsync().ConfigureAwait(false);
+                total += read;
             }
 
             request.Body.Position = 0;
 
-            if (string.IsNullOrWhiteSpace(body))
+            if (total > MaxCredentialBodyBytes)
             {
-                return (null, null);
+                return (CredentialReadStatus.TooLarge, null, null);
             }
 
-            using var doc = JsonDocument.Parse(body);
-            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            var encoding = ResolveRequestEncoding(request.ContentType);
+            if (encoding is null)
             {
-                return (null, null);
+                return (CredentialReadStatus.Unreadable, null, null);
             }
 
-            return (
-                GetString(doc.RootElement, "Username", "username", "Name", "name"),
-                GetString(doc.RootElement, "Pw", "Password", "pw", "password"));
+            var body = encoding.GetString(buffer, 0, total);
+            var (ok, username, password) = ParseCredentials(body);
+            return (ok ? CredentialReadStatus.Ok : CredentialReadStatus.Unreadable, username, password);
         }
         catch
         {
-            return (null, null);
+            return (CredentialReadStatus.Unreadable, null, null);
         }
     }
 
-    private static string? GetString(JsonElement root, params string[] names)
+    /// <summary>Encoding for the request body, following the Content-Type
+    /// charset the way ASP.NET's JSON input formatter does (UTF-8 by default,
+    /// and it transcodes UTF-16 too). Returns null for a charset .NET cannot
+    /// resolve, which the caller treats as unreadable.</summary>
+    internal static Encoding? ResolveRequestEncoding(string? contentType)
     {
-        foreach (var name in names)
+        string? charset = null;
+        if (!string.IsNullOrWhiteSpace(contentType)
+            && Microsoft.Net.Http.Headers.MediaTypeHeaderValue.TryParse(contentType, out var mediaType))
         {
-            if (root.TryGetProperty(name, out var el) && el.ValueKind == JsonValueKind.String)
-            {
-                return el.GetString();
-            }
+            charset = mediaType.Charset.HasValue ? mediaType.Charset.Value : null;
         }
 
-        return null;
+        if (string.IsNullOrWhiteSpace(charset))
+        {
+            return new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: false);
+        }
+
+        try
+        {
+            return Encoding.GetEncoding(charset.Trim('"'));
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Pull Username and Pw out of an AuthenticateByName body using the
+    /// same rules Jellyfin's model binder applies, so the account this
+    /// middleware throttles is always the account Jellyfin authenticates:
+    /// <list type="bullet">
+    /// <item>property names match case-insensitively (ASP.NET's MVC JSON
+    /// options start from JsonSerializerDefaults.Web and Jellyfin never turns
+    /// that off);</item>
+    /// <item>only <c>Username</c> and <c>Pw</c> are bound — the DTO has no other
+    /// credential fields;</item>
+    /// <item>a repeated property takes the LAST value, as the deserializer
+    /// does;</item>
+    /// <item>numbers and booleans are read as their raw text (Jellyfin's
+    /// JsonStringConverter), null as null.</item>
+    /// </list>
+    /// Returns ok=false for anything Jellyfin would not bind cleanly (not an
+    /// object, object/array values, invalid JSON), which callers refuse.</summary>
+    internal static (bool Ok, string? Username, string? Password) ParseCredentials(string? body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return (false, null, null);
+        }
+
+        try
+        {
+            // A leading BOM survives decoding as U+FEFF; System.Text.Json skips
+            // a UTF-8 BOM, so do the same.
+            using var doc = JsonDocument.Parse(body.TrimStart('﻿'));
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return (false, null, null);
+            }
+
+            string? username = null;
+            string? password = null;
+            foreach (var prop in doc.RootElement.EnumerateObject())
+            {
+                var isUser = string.Equals(prop.Name, "Username", StringComparison.OrdinalIgnoreCase);
+                var isPw = string.Equals(prop.Name, "Pw", StringComparison.OrdinalIgnoreCase);
+                if (!isUser && !isPw)
+                {
+                    continue;
+                }
+
+                if (!TryReadBoundString(prop.Value, out var value))
+                {
+                    return (false, null, null);
+                }
+
+                if (isUser)
+                {
+                    username = value;
+                }
+                else
+                {
+                    password = value;
+                }
+            }
+
+            return (true, username, password);
+        }
+        catch (JsonException)
+        {
+            return (false, null, null);
+        }
+    }
+
+    private static bool TryReadBoundString(JsonElement el, out string? value)
+    {
+        switch (el.ValueKind)
+        {
+            case JsonValueKind.String:
+                value = el.GetString();
+                return true;
+            case JsonValueKind.Null:
+                value = null;
+                return true;
+            case JsonValueKind.Number:
+            case JsonValueKind.True:
+            case JsonValueKind.False:
+                value = el.GetRawText();
+                return true;
+            default:
+                value = null;
+                return false;
+        }
     }
 }

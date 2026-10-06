@@ -498,6 +498,10 @@
                     if (body && (body.emptyPasswordBlocked || body.EmptyPasswordBlocked)) {
                         showLockoutToast(body.message || body.Message);
                     }
+                    // Banned source IP, now refused before the password check.
+                    if (body && (body.ipBanned || body.IpBanned)) {
+                        showLockoutToast(body.message || body.Message);
+                    }
                     if (isAuthPath(url) && handleTwoFactorBody(body)) {
                         return new Promise(function () {});
                     }
